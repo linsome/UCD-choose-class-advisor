@@ -1,0 +1,32 @@
+app = "ucd-course-advisor"
+primary_region = "sjc"   # San Jose — closest Fly region to UC Davis
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port     = 8000
+  force_https       = true
+  auto_stop_machines  = "stop"   # machine sleeps when idle (free tier friendly)
+  auto_start_machines = true     # wakes on first request (cold-start ~30-60s)
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type       = "requests"
+    soft_limit = 1     # matches the asyncio.Lock single-worker design
+    hard_limit = 5
+
+  [[http_service.checks]]
+    grace_period  = "600s"  # first startup downloads models (~1 GB, can take several minutes)
+    interval      = "15s"
+    timeout       = "10s"
+    method        = "GET"
+    path          = "/health"
+
+[[vm]]
+  size   = "performance-2x"   # 4 GB RAM — fits bge-m3 + reranker + ChromaDB
+  memory = "4gb"
+
+[[mounts]]
+  source      = "hf_cache"
+  destination = "/app/.hf_cache"

@@ -1,0 +1,23 @@
+# Environment
+.env
+__pycache__/
+*.py[cod]
+
+# Build artifacts (too large for GitHub; regenerate locally)
+chroma_db/
+bm25_index.pkl
+course_dag.pkl
+
+# Scraped data (regenerate with scrape-catalog.py)
+courses_raw.json
+courses.csv
+
+# Generated visualizations
+dag_*.html
+
+# JS libs (bundled by pyvis)
+lib/
+
+# Misc
+tmp_check.txt
+.claude/

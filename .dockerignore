@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+scrape-catalog.py
+build_index.py
+eval.py
+courses_raw.json
+courses.csv
+dag_*.html
+lib/
+note.md
+tmp_check.txt
+*.pkl.bak
+.claude/
