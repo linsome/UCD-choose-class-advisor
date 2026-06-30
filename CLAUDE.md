@@ -57,19 +57,29 @@ Single-shot mode skips profile collection and returns flat (un-tiered) results.
 ```bash
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```
-`api.py` is a FastAPI wrapper around `RAGPipeline`. It loads all models once at startup (~30 s on CPU) and serialises concurrent inference with an `asyncio.Lock`. Two endpoints:
+`api.py` is a FastAPI wrapper around `RAGPipeline`. It loads all models once at startup (~30 s on CPU) and serialises concurrent inference with an `asyncio.Lock`. Endpoints:
+- `GET /` — serves `index.html` (the chat UI frontend).
 - `GET /health` — liveness check; returns index size and whether the DAG is loaded.
 - `POST /query` — accepts `{"query": "...", "profile": {"major": "", "completed": [], "level": ""}}`, returns `answer`, `sources` (with DAG tier/missing/path fields), and `elapsed_seconds`.
+- `POST /extract-courses` — accepts a multipart file upload (PDF/PNG/JPG/WEBP transcript), extracts course codes via Claude vision, and returns `{"courses": [...]}`. Does **not** acquire `_lock` since it bypasses the local ML models entirely.
 
 The `profile` field is optional; omitting it returns flat results (no tier annotation, no completed-course filtering). `RAGPipeline.query` accepts `return_sources=True` to return `(answer, courses)` instead of just `answer` — the API relies on this signature.
 
-### 6. Evaluate retrieval quality
+### 6. Build the textbook database (optional, ECS courses only)
+```bash
+python build_textbook_db.py              # process all ECS courses (skips already done)
+python build_textbook_db.py --limit 5   # process only first 5 courses (debug)
+python build_textbook_db.py --rebuild   # ignore cache, regenerate all
+```
+Reads `courses.csv`, calls Claude API to generate textbook recommendations per ECS course, and writes `textbook_db.json` (keyed by `course_code`). Saves incrementally after each course so progress survives interruption. Configure `SUBJECT` at the top to target a different department.
+
+### 7. Evaluate retrieval quality
 ```bash
 python eval.py
 ```
-Runs the full pipeline (BM25 + vector → RRF → dedup → reranker) on `TEST_CASES` in `eval.py` and prints ranked results with rerank scores. Add test cases there to cover new query types. Note: `eval.py` runs without a profile, so DAG tier annotation and level boost are not exercised here.
+Runs the full pipeline (BM25 + vector → RRF → dedup → reranker) on `TEST_CASES` in `eval.py` and prints ranked results with rerank scores. If `textbook_db.json` exists, also shows the primary textbook and first three chapters for each hit. Add test cases there to cover new query types. Note: `eval.py` runs without a profile, so DAG tier annotation and level boost are not exercised here.
 
-### 7. Docker / Fly.io deployment (production)
+### 8. Docker / Fly.io deployment (production)
 ```bash
 # Local Docker
 docker build -t ucd-advisor .
@@ -105,7 +115,7 @@ query.py (RAGPipeline):
     → DAG tier annotation (if profile + DAG loaded)
     → Claude API → answer
 
-api.py wraps RAGPipeline in FastAPI (POST /query, GET /health).
+api.py wraps RAGPipeline in FastAPI (GET /, GET /health, POST /query, POST /extract-courses). `index.html` is the chat UI served at the root — it calls `/query` and `/extract-courses` directly.
 ```
 
 `query.py` imports `load_dag` and `compute_distance` from `build_dag` at runtime (inside `RAGPipeline.__init__` and `_annotate_dag`). Changing those function signatures in `build_dag.py` breaks `query.py`.
@@ -123,6 +133,7 @@ api.py wraps RAGPipeline in FastAPI (POST /query, GET /health).
 | `scrape-catalog.py` | `SUBJECTS_LIMIT`, `DELAY_SEC` |
 | `build_index.py` | `DATA_PATH`, `EMBED_MODEL`, `CHROMA_DIR`, `BM25_PATH` |
 | `build_dag.py` | `DATA_PATH`, `DAG_PATH` |
+| `build_textbook_db.py` | `DATA_PATH` (courses.csv), `OUTPUT_PATH`, `SUBJECT`, `CLAUDE_MODEL`, `DELAY_SEC` |
 | `query.py` | `RETRIEVAL_K`, `RERANK_TOP_N`, `CONTEXT_K`, `VECTOR_WEIGHT`, `BM25_WEIGHT`, `CLAUDE_MODEL`, `EMBED_MODEL`, `RERANKER_MODEL`, `LEVEL_BOOST` |
 
 `EMBED_MODEL` must be identical in `build_index.py` and `query.py` — a mismatch silently produces wrong retrieval results. Same applies to `COLLECTION` (the Chroma collection name, currently `"ucdavis_courses"`).
@@ -158,6 +169,8 @@ Chroma IDs use `{course_code}_{enumerate_index}` to avoid collisions from duplic
 OR groups get intermediate "junction" nodes in the graph (yellow diamonds in the visualization). The `recommend()` function checks CNF satisfaction against a completed-courses set.
 
 `compute_distance` returns a dict with `tier` (0/1/2), `missing` (list of best-choice missing prereqs), and `path` (topologically-sorted course sequence for tier 2). Tier 1 means ≤2 missing prereqs that are themselves immediately available.
+
+After `_annotate_dag` runs, `query.py` bumps the tier by 1 (capped at 2) for any course whose `prerequisites` field contains the word `"consent"` — even if all formal prereqs are met, instructor-consent courses are never surfaced as immediately available.
 
 Generated artifacts: `course_dag.pkl` (networkx DiGraph), `dag_<SUBJECT>.html` (pyvis visualization).
 
